@@ -434,16 +434,22 @@ describe('WebContentsView', () => {
     ifdescribe(hasCapturableScreen())('capture', () => {
       let w: Electron.BaseWindow;
       let v: Electron.WebContentsView;
-      let display: Electron.Display;
-      let corners: Electron.Point[];
 
       const backgroundUrl = `data:text/html,<style>html{background:${encodeURIComponent(HexColors.GREEN)}}</style>`;
 
-      beforeEach(async () => {
-        display = screen.getPrimaryDisplay();
+      // Points just inside each corner of the captured window, which lie
+      // within the cutout while a border radius is applied.
+      const inset = 10;
+      const corners: Array<(size: Electron.Size) => Electron.Point> = [
+        () => ({ x: inset, y: inset }), // top-left
+        ({ width }) => ({ x: width - inset, y: inset }), // top-right
+        ({ width, height }) => ({ x: width - inset, y: height - inset }), // bottom-right
+        ({ height }) => ({ x: inset, y: height - inset }) // bottom-left
+      ];
 
+      beforeEach(async () => {
         w = new BaseWindow({
-          ...display.workArea,
+          ...screen.getPrimaryDisplay().workArea,
           show: true,
           frame: false,
           hasShadow: false,
@@ -457,21 +463,6 @@ describe('WebContentsView', () => {
 
         const readyForCapture = once(v.webContents, 'ready-to-show');
         v.webContents.loadURL(backgroundUrl);
-
-        const inset = 10;
-        // Adjust for macOS menu bar height which seems to be about 24px
-        // based on the results from accessibility inspector.
-        const platformInset = process.platform === 'darwin' ? 15 : 0;
-        corners = [
-          { x: display.workArea.x + inset, y: display.workArea.y + inset + platformInset }, // top-left
-          { x: display.workArea.x + display.workArea.width - inset, y: display.workArea.y + inset + platformInset }, // top-right
-          {
-            x: display.workArea.x + display.workArea.width - inset,
-            y: display.workArea.y + display.workArea.height - inset
-          }, // bottom-right
-          { x: display.workArea.x + inset, y: display.workArea.y + display.workArea.height - inset } // bottom-left
-        ];
-
         await readyForCapture;
       });
 
@@ -481,24 +472,40 @@ describe('WebContentsView', () => {
       });
 
       it('should render with cutout corners', async () => {
-        const screenCapture = new ScreenCapture(display);
+        const capture = ScreenCapture.forWindow(w);
 
         for (const corner of corners) {
-          await screenCapture.expectColorAtPointOnDisplayMatches(HexColors.BLUE, () => corner);
+          await capture.expectColorAtPointMatches(HexColors.BLUE, corner);
         }
 
         // Center should be WebContents page background color
-        await screenCapture.expectColorAtCenterMatches(HexColors.GREEN);
+        await capture.expectColorAtCenterMatches(HexColors.GREEN);
       });
 
       it('should allow resetting corners', async () => {
-        const corner = corners[0];
+        // Exercise the layer-backed path, where an empty clip path would create
+        // a fully transparent mask and hide the view.
+        v.setBackgroundBlur(10);
         v.setBorderRadius(0);
 
         await nextFrameTime();
-        const screenCapture = new ScreenCapture(display);
-        await screenCapture.expectColorAtPointOnDisplayMatches(HexColors.GREEN, () => corner);
-        await screenCapture.expectColorAtCenterMatches(HexColors.GREEN);
+        const capture = ScreenCapture.forWindow(w);
+        await capture.expectColorAtPointMatches(HexColors.GREEN, corners[0]);
+        await capture.expectColorAtCenterMatches(HexColors.GREEN);
+      });
+
+      it('should preserve valid asymmetric radii', async () => {
+        const parent = new View();
+        w.setContentView(parent);
+        parent.addChildView(v);
+        v.setBounds({ x: 0, y: 0, width: 100, height: 100 });
+        v.setBorderRadius({ topLeft: 80, topRight: 20, bottomRight: 30, bottomLeft: 10 });
+
+        const capture = ScreenCapture.forWindow(w);
+        await capture.expectColorAtPointMatches(HexColors.BLUE, () => ({ x: 25, y: 15 }));
+        await capture.expectColorAtPointMatches(HexColors.GREEN, () => ({ x: 90, y: 10 }));
+        await capture.expectColorAtPointMatches(HexColors.GREEN, () => ({ x: 90, y: 90 }));
+        await capture.expectColorAtPointMatches(HexColors.GREEN, () => ({ x: 5, y: 95 }));
       });
 
       it('should keep the clip and compositor radii in sync after resizing', async () => {
@@ -507,15 +514,12 @@ describe('WebContentsView', () => {
         parent.addChildView(v);
         v.setBorderRadius(100);
 
-        const corner = corners[0];
-        const screenCapture = new ScreenCapture(display);
+        const capture = ScreenCapture.forWindow(w);
         v.setBounds({ x: 0, y: 0, width: 40, height: 40 });
-        await nextFrameTime();
-        await screenCapture.expectColorAtPointOnDisplayMatches(HexColors.GREEN, () => corner);
+        await capture.expectColorAtPointMatches(HexColors.GREEN, corners[0]);
 
         v.setBounds({ x: 0, y: 0, width: 200, height: 200 });
-        await nextFrameTime();
-        await screenCapture.expectColorAtPointOnDisplayMatches(HexColors.BLUE, () => corner);
+        await capture.expectColorAtPointMatches(HexColors.BLUE, corners[0]);
       });
 
       it('should render when set before attached', async () => {
@@ -528,10 +532,9 @@ describe('WebContentsView', () => {
         v.webContents.loadURL(backgroundUrl);
         await readyForCapture;
 
-        const corner = corners[0];
-        const screenCapture = new ScreenCapture(display);
-        await screenCapture.expectColorAtPointOnDisplayMatches(HexColors.BLUE, () => corner);
-        await screenCapture.expectColorAtCenterMatches(HexColors.GREEN);
+        const capture = ScreenCapture.forWindow(w);
+        await capture.expectColorAtPointMatches(HexColors.BLUE, corners[0]);
+        await capture.expectColorAtCenterMatches(HexColors.GREEN);
       });
     });
 

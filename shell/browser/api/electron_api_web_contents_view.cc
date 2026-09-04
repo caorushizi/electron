@@ -4,6 +4,7 @@
 
 #include "shell/browser/api/electron_api_web_contents_view.h"
 
+#include "base/i18n/rtl.h"
 #include "base/no_destructor.h"
 #include "gin/data_object_builder.h"
 #include "shell/browser/api/electron_api_web_contents.h"
@@ -80,7 +81,18 @@ void WebContentsView::OnBorderRadiusApplied(
     const gfx::RoundedCornersF& border_radii) {
   if (api_web_contents_ && view()->GetWidget()) {
     auto* view = api_web_contents_->inspectable_web_contents()->GetView();
-    view->SetCornerRadii(border_radii);
+    gfx::RoundedCornersF web_contents_radii = border_radii;
+#if defined(USE_AURA)
+    // NativeViewHostAura interprets corner radii as logical values and mirrors
+    // them in RTL layouts. Swap them here so the public API remains physical,
+    // matching the View clip path and macOS behavior.
+    if (base::i18n::IsRTL()) {
+      web_contents_radii = gfx::RoundedCornersF(
+          border_radii.upper_right(), border_radii.upper_left(),
+          border_radii.lower_left(), border_radii.lower_right());
+    }
+#endif
+    view->SetCornerRadii(web_contents_radii);
   }
 }
 

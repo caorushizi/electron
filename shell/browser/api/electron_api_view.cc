@@ -531,34 +531,43 @@ void View::ApplyBorderRadius() {
     return;
 
   const auto size = view_->bounds().size();
-  // Each corner is independently clamped to half of the smaller dimension so
-  // the rounded rect remains representable. Clamping is computed locally and
-  // doesn't mutate the stored radii — a future resize back up restores them.
-  const float max_r =
-      std::max(0.f, std::min(size.width(), size.height()) / 2.f);
-  const auto clamp = [max_r](float r) {
-    return std::max(0.f, std::min(r, max_r));
-  };
-  const gfx::RoundedCornersF r(
-      clamp(border_radii_->upper_left()), clamp(border_radii_->upper_right()),
-      clamp(border_radii_->lower_right()), clamp(border_radii_->lower_left()));
-
-  if (r.IsEmpty() || size.IsEmpty()) {
-    view_->SetClipPath(SkPath());
-    OnBorderRadiusApplied(r);
+  if (size.IsEmpty()) {
+    // An empty clip path creates a fully transparent mask on a layer-backed
+    // view. Leave an existing layer mask alone until the view has bounds again.
+    if (!view_->layer())
+      view_->SetClipPath(SkPath());
+    view_->SchedulePaint();
+    OnBorderRadiusApplied(gfx::RoundedCornersF());
     return;
   }
 
   const SkRect rect = SkRect::MakeWH(static_cast<SkScalar>(size.width()),
                                      static_cast<SkScalar>(size.height()));
-  const SkVector radii[4] = {{r.upper_left(), r.upper_left()},
-                             {r.upper_right(), r.upper_right()},
-                             {r.lower_right(), r.lower_right()},
-                             {r.lower_left(), r.lower_left()}};
+  const auto nonnegative = [](float radius) { return std::max(0.f, radius); };
+  const SkVector radii[4] = {{nonnegative(border_radii_->upper_left()),
+                              nonnegative(border_radii_->upper_left())},
+                             {nonnegative(border_radii_->upper_right()),
+                              nonnegative(border_radii_->upper_right())},
+                             {nonnegative(border_radii_->lower_right()),
+                              nonnegative(border_radii_->lower_right())},
+                             {nonnegative(border_radii_->lower_left()),
+                              nonnegative(border_radii_->lower_left())}};
   SkRRect rrect;
   rrect.setRectRadii(rect, radii);
-  view_->SetClipPath(SkPath::RRect(rrect));
-  OnBorderRadiusApplied(r);
+  const gfx::RoundedCornersF normalized_radii(
+      rrect.radii(SkRRect::kUpperLeft_Corner).x(),
+      rrect.radii(SkRRect::kUpperRight_Corner).x(),
+      rrect.radii(SkRRect::kLowerRight_Corner).x(),
+      rrect.radii(SkRRect::kLowerLeft_Corner).x());
+
+  // SetClipPath with an empty path creates a fully transparent mask when the
+  // view has a layer. Use the equivalent rectangular path in that case.
+  if (normalized_radii.IsEmpty() && !view_->layer())
+    view_->SetClipPath(SkPath());
+  else
+    view_->SetClipPath(SkPath::RRect(rrect));
+  view_->SchedulePaint();
+  OnBorderRadiusApplied(normalized_radii);
 }
 
 void View::OnBorderRadiusApplied(const gfx::RoundedCornersF&) {}
